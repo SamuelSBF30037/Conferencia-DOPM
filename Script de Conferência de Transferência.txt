@@ -1,0 +1,148 @@
+/**
+ * Script de Conferência de Transferência (Versão Inteligente V5)
+ * Foco: Resiliência absoluta contra falsos positivos.
+ * Lógica: Comparação de conjuntos de números e siglas (Set-based matching).
+ */
+(function conferirDados() {
+    const todosOsElementos = Array.from(document.querySelectorAll('td, b, em, div, p'));
+    let indexTopico = -1;
+
+    console.log("%c BUSCANDO TÓPICO: TRANSFERÊNCIA DE UNIDADE...", "color: #2196F3; font-weight: bold;");
+
+    for (let i = 0; i < todosOsElementos.length; i++) {
+        const txt = todosOsElementos[i].innerText.toUpperCase().trim();
+        if (txt.includes("TRANSFERÊNCIA DE UNIDADE") || txt.includes("TRANSFERENCIA DE UNIDADE")) {
+            indexTopico = i;
+            break;
+        }
+    }
+
+    if (indexTopico === -1) {
+        console.error("ERRO: Tópico não encontrado.");
+        return;
+    }
+
+    const todasAsTabelas = Array.from(document.querySelectorAll('table'));
+    const blocosTransferencia = [];
+
+    todasAsTabelas.forEach(tabela => {
+        if (tabela.compareDocumentPosition(todosOsElementos[indexTopico]) & Node.DOCUMENT_POSITION_PRECEDING) {
+            if (tabela.innerText.includes("TRANSFIRO")) {
+                const tdDados = tabela.querySelector('td[width="90%"]') || tabela.querySelector('td');
+                if (tdDados && tdDados.innerText.includes("TRANSFIRO") && !blocosTransferencia.includes(tdDados)) {
+                    blocosTransferencia.push(tdDados);
+                }
+            }
+        }
+    });
+
+    /**
+     * Limpa nomes: Remove postos, graduações e números para focar no núcleo.
+     */
+    function limparNome(texto) {
+        if (!texto) return "";
+        let t = texto.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const ruidos = /\b(2º|1º|3º|TENENTE|TEN|SOLDADO|SD|CABO|CB|SARGENTO|SGT|SUBTENENTE|SUB|MAJOR|MAJ|CAPITAO|CAP|CORONEL|CEL|ASPIRANTE|ASP|ALUNO|QOPM|QPPM|QPE|QPS|SBF|PMGO|PM|DE\s\dª\sCLASSE|\*\d+\*|\d+[\.\d]*)\b/gi;
+        t = t.replace(ruidos, "");
+        t = t.replace(/[^\w\s]/gi, ''); 
+        return t.replace(/\s+/g, ' ').trim();
+    }
+
+    /**
+     * Extrai um Set (conjunto) de identificadores únicos (números e siglas principais)
+     */
+    function obterIdentificadores(u) {
+        if (!u) return new Set();
+        let t = u.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        
+        // Simplificação de termos longos para evitar ruído
+        t = t.replace(/COMANDO REGIONAL/g, "CRPM")
+             .replace(/BATALHAO/g, "BPM")
+             .replace(/COMPANHIA INDEPENDENTE/g, "CIPM")
+             .replace(/POLICIA MILITAR/g, "")
+             .replace(/NAO CADASTRADO/g, "");
+
+        // Captura números isolados e siglas conhecidas
+        const matches = t.match(/\d+|CRPM|BPM|CIPM|CPC|CME|CPM|CPCHOQUE/g) || [];
+        
+        // Normaliza "01" para "1" e retorna como Set para comparação de subconjuntos
+        return new Set(matches.map(m => m.replace(/^0+/, '')));
+    }
+
+    function unidadesCorespondem(u1, u2) {
+        const idents1 = obterIdentificadores(u1);
+        const idents2 = obterIdentificadores(u2);
+        
+        if (idents1.size === 0 || idents2.size === 0) return true;
+
+        // Lógica de interseção: se uma unidade compartilha os números/siglas principais com a outra
+        // Ex: Se em P1 tem {42, BPM, 1, CRPM} e em P2 tem {42, BPM}, é compatível.
+        let intersecao = 0;
+        idents2.forEach(val => {
+            if (idents1.has(val)) intersecao++;
+        });
+
+        // Se houver pelo menos um número ou sigla batendo, consideramos OK 
+        // para evitar que nomes de cidades ou parênteses vazios quebrem a lógica.
+        return intersecao > 0;
+    }
+
+    const logs = [];
+
+    blocosTransferencia.forEach((bloco, i) => {
+        const textoBase = bloco.innerText.replace(/\s+/g, ' ').trim();
+        const divisorMatch = textoBase.match(/\d{2}\/\d{2}\/\d{4}\./);
+        if (!divisorMatch) return;
+
+        const posDivisor = divisorMatch.index + divisorMatch[0].length;
+        const p1 = textoBase.substring(0, posDivisor).trim();
+        const p2 = textoBase.substring(posDivisor).trim();
+
+        // Extração Nome P1 (Sistema)
+        const nomeP1Match = p1.match(/(?:TENENTE|SOLDADO|CABO|SARGENTO|MAJOR|CAPITAO|SUBTENENTE|CORONEL|TEN|SD|CB|SGT|MAJ|CAP|CEL|ASP|ALUNO).*?,\s(?:[\d\*]*),\s(.*?),\sCPF/i) ||
+                           p1.match(/TRANSFIRO O .*?,\s(?:[\d\*]*),\s(.*?),\sCPF/i);
+        const nomeP1 = nomeP1Match ? nomeP1Match[1].trim() : "";
+
+        // Unidades P1 - Captura entre prefixos e preposições
+        const origemP1 = p1.match(/DA\(O\)\s(.*?)\sPARA/i)?.[1] || "";
+        const destinoP1 = p1.match(/PARA\sA\(O\)\s(.*?)(?:,|$)/i)?.[1] || "";
+
+        // Extração Nome P2 (Texto)
+        const nomeP2Match = p2.match(/TRANSFIRO O (.*?)(?:, NO INTERESSE|, POR INTERESSE|, NO INT|, NO INTERESSE| NO INTERESSE)/i);
+        const nomeP2Raw = nomeP2Match ? nomeP2Match[1] : "";
+        
+        // Unidades P2
+        const origemP2 = p2.match(/(?:DO|DA)\s(.*?)\sPARA/i)?.[1] || "";
+        const destinoP2 = p2.match(/PARA\s(?:O|A)\s(.*?)(?:,|$|\.)/i)?.[1] || "";
+
+        let erros = [];
+        const n1 = limparNome(nomeP1);
+        const n2 = limparNome(nomeP2Raw);
+
+        // Comparação de Nome
+        if (n1 && n2) {
+            if (n1 !== n2 && !n1.includes(n2) && !n2.includes(n1)) {
+                erros.push("NOME");
+            }
+        }
+
+        // Comparação de Unidades com lógica de Interseção de Identificadores
+        if (!unidadesCorespondem(origemP1, origemP2)) erros.push("ORIGEM");
+        if (!unidadesCorespondem(destinoP1, destinoP2)) erros.push("DESTINO");
+
+        let status = erros.length === 0 ? "✅ OK" : `❌ DIVERGÊNCIA: ${erros.join(' | ')}`;
+        let cor = erros.length === 0 ? "color: green" : "color: red; font-weight: bold;";
+
+        console.log(`%c[${(i + 1).toString().padStart(2, '0')}] ${nomeP1.padEnd(35)} -> ${status}`, cor);
+        logs.push(`Registro ${(i + 1).toString().padStart(2, '0')}: ${nomeP1 || "NOME NÃO EXTRAÍDO"} - ${status}`);
+    });
+
+    if (logs.length > 0) {
+        const relatorio = `RELATÓRIO DE CONFERÊNCIA (V5 - INTERSEÇÃO)\nGerado em: ${new Date().toLocaleString()}\n${'='.repeat(60)}\n` + logs.join('\n');
+        const blob = new Blob([relatorio], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `conferencia_transferencia_v5.txt`;
+        a.click();
+    }
+})();

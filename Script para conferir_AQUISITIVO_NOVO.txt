@@ -1,0 +1,173 @@
+/**
+ * Script para conferir divergências de Período Aquisitivo, incoerências de Exercício
+ * e alerta de períodos com data final superior a 60 dias da data atual.
+ */
+(function verificarConsistenciaFerias() {
+    
+    // --- ESTILOS DE CONSOLE ---
+    const styles = {
+        header: 'font-weight: bold; font-size: 16px; color: #1e88e5; background-color: #e3f2fd; padding: 4px 8px; border-radius: 4px;',
+        success: 'color: #388e3c; font-weight: bold;',
+        error: 'color: #d32f2f; font-weight: bold;',
+        warning: 'color: #f57c00; font-weight: bold;',
+        label: 'color: #546e7a; font-weight: bold;',
+        data: 'color: #333; font-weight: normal;',
+        separator: 'color: #ccc;',
+        groupHeader: 'font-weight: bold; color: #00796b; background-color: #e0f2f1; padding: 2px 4px; border-radius: 2px;'
+    };
+
+    let relatorioTxt = "";
+    const agora = new Date();
+    const limite60Dias = new Date();
+    limite60Dias.setDate(agora.getDate() + 60);
+
+    function adicionarLinhaTxt(linha) {
+        relatorioTxt += linha + "\n";
+    }
+
+    console.log('%c🔍 INICIANDO CONFERÊNCIA AVANÇADA: Aquisitivo e Prazos', styles.header);
+    console.log('─'.repeat(75));
+
+    adicionarLinhaTxt("=== RELATÓRIO DE CONFERÊNCIA: AQUISITIVO, INCOERÊNCIAS E PRAZOS FUTUROS ===");
+    adicionarLinhaTxt(`Data da Conferência: ${agora.toLocaleString('pt-BR')}`);
+    adicionarLinhaTxt(`Data Limite (Hoje + 60 dias): ${limite60Dias.toLocaleDateString('pt-BR')}`);
+
+    // --- Funções Auxiliares ---
+
+    function normalizarTexto(texto) {
+        if (typeof texto !== 'string') return '';
+        return texto.replace(/\u00A0/g, ' ').trim().toUpperCase().replace(/\s+/g, ' ')
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); 
+    }
+
+    function parseData(dataStr) {
+        const partes = dataStr.split('/');
+        if (partes.length !== 3) return null;
+        return new Date(partes[2], partes[1] - 1, partes[0]);
+    }
+
+    /** Extrai dados dos blocos HTML */
+    function extrairDados() {
+        const blocos = document.querySelectorAll('td[width="90%"]'); 
+        const registros = [];
+        let index = 1;
+
+        const regexAssinatura = /(O\(A\)|O)\s+(.*?)\s+ESTÁ\s+AUTORIZADO/i; 
+        const regexPeriodo = /PERÍODO\s+AQUISITIVO\s+DE\s*(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})/i; 
+        const regexExercicio = /EXERCÍCIO:\s*(\d{4})/i; 
+
+        blocos.forEach(bloco => {
+            try {
+                const textoCompleto = bloco.textContent || '';
+                
+                const matchAssinatura = textoCompleto.match(regexAssinatura);
+                const assinaturaCompleta = matchAssinatura ? matchAssinatura[2].trim() : 'ASSINATURA-NA';
+                const nomeCompleto = assinaturaCompleta.replace(/(CAPITÃO|MAJOR|TENENTE|CORONEL|SARGENTO|CABO|SOLDADO|SD|CB|SGT|TEN|CEL|MAJ)\s*[\*\d\.\s]+/i, '').trim();
+
+                const matchPeriodo = textoCompleto.match(regexPeriodo);
+                const dataInicioStr = matchPeriodo ? matchPeriodo[1] : null;
+                const dataFimStr = matchPeriodo ? matchPeriodo[2] : null;
+                
+                const matchExercicio = textoCompleto.match(regexExercicio);
+                const exercicioAno = matchExercicio ? matchExercicio[1].trim() : 'ANO-NA';
+
+                registros.push({
+                    numero: index,
+                    nomeCompleto: nomeCompleto, 
+                    assinatura: normalizarTexto(assinaturaCompleta), 
+                    periodoOriginal: matchPeriodo ? matchPeriodo[0] : 'NÃO ENCONTRADO',
+                    dataInicio: dataInicioStr ? parseData(dataInicioStr) : null,
+                    dataFim: dataFimStr ? parseData(dataFimStr) : null,
+                    dataFimStr: dataFimStr,
+                    exercicioAno: exercicioAno,
+                    anoAquisitivoInicio: dataInicioStr ? dataInicioStr.split('/')[2] : 'ANO-NA'
+                });
+                index++;
+            } catch (e) { console.error(e); }
+        });
+        return registros;
+    }
+
+    const registros = extrairDados();
+    
+    // --- PROCESSAMENTO DAS REGRAS ---
+
+    // 1. Divergências em Duplicatas
+    const mapa = {};
+    registros.forEach(r => {
+        if (r.assinatura !== 'ASSINATURA-NA') {
+            if (!mapa[r.assinatura]) mapa[r.assinatura] = [];
+            mapa[r.assinatura].push(r);
+        }
+    });
+
+    const divergenciasDuplicatas = [];
+    Object.values(mapa).filter(g => g.length > 1).forEach(grupo => {
+        const primeiro = grupo[0].periodoOriginal;
+        if (grupo.some(reg => reg.periodoOriginal !== primeiro)) {
+            divergenciasDuplicatas.push(grupo);
+        }
+    });
+
+    // 2. Incoerência Exercício vs Início Aquisitivo
+    const incoerenciasExercicio = registros.filter(r => 
+        r.exercicioAno !== 'ANO-NA' && r.anoAquisitivoInicio !== 'ANO-NA' && r.exercicioAno !== r.anoAquisitivoInicio
+    );
+
+    // 3. NOVO: Data Final > 60 dias da data atual
+    const prazosExcedidos = registros.filter(r => 
+        r.dataFim && r.dataFim > limite60Dias
+    );
+
+    // --- GERAÇÃO DO RELATÓRIO TXT E CONSOLE ---
+
+    const separador = "-".repeat(70);
+
+    // Relatório 1: Divergências
+    adicionarLinhaTxt("\n[1] DIVERGÊNCIAS EM DUPLICATAS");
+    if (divergenciasDuplicatas.length > 0) {
+        divergenciasDuplicatas.forEach(g => {
+            adicionarLinhaTxt(`Chave: ${g[0].assinatura}`);
+            g.forEach(r => adicionarLinhaTxt(`  - Registro ${r.numero}: ${r.periodoOriginal}`));
+        });
+    } else { adicionarLinhaTxt("Nenhuma divergência encontrada."); }
+
+    // Relatório 2: Incoerências
+    adicionarLinhaTxt("\n" + separador + "\n[2] INCOERÊNCIA: EXERCÍCIO VS INÍCIO AQUISITIVO");
+    if (incoerenciasExercicio.length > 0) {
+        incoerenciasExercicio.forEach(r => {
+            adicionarLinhaTxt(`Registro ${r.numero} (${r.nomeCompleto}): Exercício ${r.exercicioAno} != Início Aquisitivo ${r.anoAquisitivoInicio}`);
+        });
+    } else { adicionarLinhaTxt("Nenhuma incoerência encontrada."); }
+
+    // Relatório 3: Prazos Futuros (> 60 dias)
+    console.log('\n%c=== RELATÓRIO: PRAZOS COM DATA FINAL > 60 DIAS ===', styles.header);
+    adicionarLinhaTxt("\n" + separador + "\n[3] ALERTA: PERÍODO AQUISITIVO COM FIM SUPERIOR A 60 DIAS DA DATA ATUAL");
+    
+    if (prazosExcedidos.length > 0) {
+        prazosExcedidos.forEach(r => {
+            const diasDiferenca = Math.floor((r.dataFim - agora) / (1000 * 60 * 60 * 24));
+            const msg = `Registro ${r.numero} (${r.nomeCompleto}): Data Fim ${r.dataFimStr} (${diasDiferenca} dias à frente)`;
+            console.log(`%c⚠️ ${msg}`, styles.warning);
+            adicionarLinhaTxt(msg);
+        });
+    } else { 
+        console.log('%c✅ Nenhum período aquisitivo termina além de 60 dias da data atual.', styles.success);
+        adicionarLinhaTxt("Nenhum registro encontrado com esta condição."); 
+    }
+
+    // --- DOWNLOAD ---
+    function downloadTxt(content) {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `Conferencia_Aquisitivo_Full_${new Date().toISOString().slice(0,10)}.txt`;
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
+    console.log('\n%c💾 Download do relatório TXT iniciado...', 'font-weight: bold;');
+    setTimeout(() => downloadTxt(relatorioTxt), 500);
+
+})();
