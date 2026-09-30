@@ -1,0 +1,340 @@
+// Script para conferir divergências APENAS no campo "Período Aquisitivo" entre duplicatas
+// E AGORA VERIFICA INCOERÊNCIA: Ano do Exercício vs. Ano Inicial do Período Aquisitivo
+// ATUALIZAÇÃO: Gera relatório estilizado no console E um relatório em TXT para download automático.
+(function verificarConsistenciaFerias() {
+    
+    // --- ESTILOS DE CONSOLE ---
+    const styles = {
+        header: 'font-weight: bold; font-size: 16px; color: #1e88e5; background-color: #e3f2fd; padding: 4px 8px; border-radius: 4px;',
+        success: 'color: #388e3c; font-weight: bold;',
+        error: 'color: #d32f2f; font-weight: bold;',
+        label: 'color: #546e7a; font-weight: bold;',
+        data: 'color: #333; font-weight: normal;',
+        separator: 'color: #ccc;',
+        groupHeader: 'font-weight: bold; color: #00796b; background-color: #e0f2f1; padding: 2px 4px; border-radius: 2px;'
+    };
+
+    let relatorioTxt = ""; // Variável global para armazenar o conteúdo TXT não estilizado
+
+    /** Adiciona uma linha ao relatório TXT. */
+    function adicionarLinhaTxt(linha) {
+        relatorioTxt += linha + "\n";
+    }
+
+    console.log('%c🔍 INICIANDO CONFERÊNCIA: Período Aquisitivo (Duplicatas e Consistência)', styles.header);
+    console.log('─'.repeat(75));
+
+    adicionarLinhaTxt("=== RELATÓRIO DE CONFERÊNCIA: AQUISITIVO/DIVERGÊNCIAS E INCOERÊNCIAS ===");
+
+    // --- Funções de Ajuda ---
+
+    /**
+     * Normaliza a string para comparação (remoção de espaços extras, pontuações, etc.).
+     * @param {string} texto
+     * @returns {string} Texto normalizado em maiúsculas.
+     */
+    function normalizarTexto(texto) {
+        if (typeof texto !== 'string') return '';
+        return texto
+            .replace(/\u00A0/g, ' ') 
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, ' ') 
+            .replace(/&NBSP;/g, ' ') 
+            .replace(/[.*()\[\]]/g, '') 
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); 
+    }
+
+    /**
+     * Extrai e formata a data/período para comparação (DD/MM/AAAA-DD/MM/AAAA).
+     * @param {string} periodo
+     * @returns {string} Período formatado.
+     */
+    function normalizarPeriodo(periodo) {
+        if (typeof periodo !== 'string') return '';
+        // Remove espaços, traços extras e normaliza a formatação para o padrão "DD/MM/AAAA-DD/MM/AAAA"
+        const limpo = normalizarTexto(periodo)
+            .replace(/[^0-9\/\-]/g, '') 
+            .replace(/\s*-\s*/, '-'); 
+            
+        return limpo;
+    }
+
+    /**
+     * Extrai os dados necessários de cada bloco usando Regular Expressions (Regex).
+     * @returns {Array<Object>} Lista de registros extraídos.
+     */
+    function extrairDados() {
+        // ATENÇÃO: Usando 'td[width="90%"]' como o contêiner de cada registro.
+        const blocos = document.querySelectorAll('td[width="90%"]'); 
+        const registros = [];
+        let index = 1;
+
+        // Regex para extrair a Assinatura (Nome e Patente do militar afastado - Chave de Duplicação)
+        const regexAssinatura = /(O\(A\)|O)\s+(.*?)\s+ESTÁ\s+AUTORIZADO/i; 
+        
+        // Regex para extrair o Período Aquisitivo completo
+        const regexPeriodo = /PERÍODO\s+AQUISITIVO\s+DE\s*([^.]+)/i; 
+        
+        // Regex para extrair o Exercício (Ano) - DEVE APARECER APENAS NO SEGUNDO BLOCO DE CADA AFASTAMENTO
+        const regexExercicio = /EXERCÍCIO:\s*(\d{4})/i; 
+        
+        // Regex para capturar o ano de início de uma data no formato DD/MM/AAAA
+        const regexAnoInicio = /(\d{2}\/\d{2}\/(\d{4}))/i; 
+
+        blocos.forEach(bloco => {
+            try {
+                // Captura o texto completo dentro do bloco
+                const textoCompleto = bloco.textContent || '';
+                const num = index; 
+
+                // 1. Extrai Assinatura (Nome + Patente do afastado) para Agrupamento
+                const matchAssinatura = textoCompleto.match(regexAssinatura);
+                const assinaturaCompleta = matchAssinatura ? matchAssinatura[2].trim() : 'ASSINATURA-NA';
+                
+                // Nome limpo para o relatório
+                const nomeCompleto = assinaturaCompleta.replace(/(CAPITÃO|MAJOR|TENENTE|CORONEL|SARGENTO)\s*[\*\d\.\s]+/i, '').trim();
+
+                // 2. Extrai Período Aquisitivo (completo)
+                const matchPeriodo = textoCompleto.match(regexPeriodo);
+                const periodoAquisitivoOriginal = matchPeriodo ? matchPeriodo[1].trim() : 'PERÍODO NÃO ENCONTRADO';
+                
+                // 3. Extrai Exercício (Ano)
+                const matchExercicio = textoCompleto.match(regexExercicio);
+                const exercicioAno = matchExercicio ? matchExercicio[1].trim() : 'ANO-NA';
+
+                // 4. Extrai o ano de início do Período Aquisitivo (AAAA)
+                const matchAnoInicio = periodoAquisitivoOriginal.match(regexAnoInicio);
+                const periodoAquisitivoInicioAno = matchAnoInicio ? matchAnoInicio[2] : 'ANO-NA';
+
+                // Usamos a assinatura normalizada (posto + nome) como chave de agrupamento
+                const chaveAgrupamento = normalizarTexto(assinaturaCompleta);
+
+
+                registros.push({
+                    numero: num,
+                    nomeCompleto: nomeCompleto, 
+                    assinatura: chaveAgrupamento, 
+                    periodoAquisitivoOriginal: periodoAquisitivoOriginal,
+                    periodoAquisitivoNormalizado: normalizarPeriodo(periodoAquisitivoOriginal),
+                    exercicioAno: exercicioAno, // NOVO: Ano do Exercício (Ex: 2020)
+                    periodoAquisitivoInicioAno: periodoAquisitivoInicioAno, // NOVO: Ano de início do Aquisitivo (Ex: 2020)
+                    blocoHtml: bloco.outerHTML 
+                });
+                index++;
+            } catch (error) {
+                console.error(`Erro ao processar o bloco ${index}:`, error);
+            }
+        });
+        return registros;
+    }
+
+    // --- LÓGICA PRINCIPAL: EXTRAÇÃO E CONFERÊNCIA ---
+
+    const registros = extrairDados();
+    const mapaDuplicatas = {};
+    
+    // 1. Agrupar registros pela Assinatura normalizada (Para a Checagem de Divergência)
+    registros.forEach(r => {
+        const chave = r.assinatura;
+        if (chave !== 'ASSINATURA-NA' && chave !== '') {
+            if (!mapaDuplicatas[chave]) {
+                mapaDuplicatas[chave] = [];
+            }
+            mapaDuplicatas[chave].push(r);
+        }
+    });
+
+    // 2. Filtrar apenas grupos com duplicatas
+    const gruposDuplicados = Object.values(mapaDuplicatas).filter(grupo => grupo.length > 1);
+
+    // 3. Comparar o Período Aquisitivo nos grupos duplicados (DIVERGÊNCIA)
+    const divergencias = [];
+
+    gruposDuplicados.forEach(grupo => {
+        let primeiroPeriodo = grupo[0].periodoAquisitivoNormalizado;
+        let divergente = false;
+
+        // Se houver mais de um registro, compare os períodos aquisitivos
+        for (let i = 1; i < grupo.length; i++) {
+            if (grupo[i].periodoAquisitivoNormalizado !== primeiroPeriodo) {
+                divergente = true;
+                break;
+            }
+        }
+
+        if (divergente) {
+            divergencias.push({
+                assinatura: grupo[0].assinatura,
+                registros: grupo
+            });
+        }
+    });
+
+    // 4. Checar Incoerência: Exercício vs. Período Aquisitivo (para TODOS os registros)
+    const incoerenciasExercicio = [];
+
+    registros.forEach(r => {
+        const exercicio = r.exercicioAno;
+        const anoAquisitivoInicio = r.periodoAquisitivoInicioAno;
+
+        // REGRA: A checagem de incoerência só é relevante se o campo EXERCÍCIO for encontrado.
+        // O campo EXERCÍCIO geralmente está no segundo bloco de cada afastamento.
+        if (exercicio !== 'ANO-NA' && anoAquisitivoInicio !== 'ANO-NA' && exercicio !== anoAquisitivoInicio) {
+            incoerenciasExercicio.push(r);
+        }
+    });
+
+    // --- Funções de Download (para o relatório TXT) ---
+
+    /**
+     * Gera e baixa um arquivo de texto simples.
+     * @param {string} content O conteúdo do arquivo.
+     * @param {string} filename O nome do arquivo.
+     */
+    function downloadTxtFile(content, filename) {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+    
+    // --- Geração do Relatório ESTILIZADO no Console e TXT ---
+
+    const dataHora = new Date().toLocaleString('pt-BR');
+    const linhaSeparadora = '-----------------------------------------------------------------------';
+    
+    // Geração TXT (Cabeçalho Geral)
+    adicionarLinhaTxt(`Data de Geração: ${dataHora}`);
+    adicionarLinhaTxt(`Total de Registros Analisados: ${registros.length}`);
+    adicionarLinhaTxt(linhaSeparadora);
+
+    // Geração Console (Report 1 - Divergência Check)
+    console.log('\n%c=== RELATÓRIO 1/2: DIVERGÊNCIAS ENTRE REGISTROS DUPLICADOS (Aquisitivo) ===', styles.header);
+    console.log(`%cData de Geração: %c${dataHora}`, styles.label, styles.data);
+    console.log(`%cTotal de Registros Analisados: %c${registros.length}`, styles.label, styles.data);
+    console.log(`%cTotal de Grupos Duplicados (por Assinatura): %c${gruposDuplicados.length}`, styles.label, styles.data);
+    
+    // Geração TXT (Report 1)
+    adicionarLinhaTxt("\n\n=== RELATÓRIO 1/2: DIVERGÊNCIAS ENTRE REGISTROS DUPLICADOS (Aquisitivo) ===");
+    adicionarLinhaTxt(`Total de Grupos Duplicados (por Assinatura): ${gruposDuplicados.length}`);
+    adicionarLinhaTxt(linhaSeparadora);
+
+    if (divergencias.length > 0) {
+        // Geração Console
+        console.log(`%cTotal de Divergências Encontradas: %c${divergencias.length}`, styles.error, styles.error);
+        console.log(`%c${linhaSeparadora}`, styles.separator);
+        console.log('\n🚨 DETALHES DAS DIVERGÊNCIAS ENCONTRADAS:');
+        
+        // Geração TXT
+        adicionarLinhaTxt(`Total de Divergências Encontradas: ${divergencias.length}`);
+        adicionarLinhaTxt("### DETALHES DAS DIVERGÊNCIAS ENCONTRADAS (Em Registros Duplicados):");
+        
+        divergencias.forEach((div, index) => {
+            // Geração Console
+            console.log(`\n%c[ ${index + 1} ] CHAVE (POSTO + NOME): %c${div.assinatura}`, styles.groupHeader, styles.groupHeader);
+            console.log('%c------------------------------------------', styles.separator);
+            
+            // Geração TXT
+            adicionarLinhaTxt(`\n[ ${index + 1} ] CHAVE (POSTO + NOME): ${div.assinatura}`);
+            adicionarLinhaTxt('------------------------------------------');
+            
+            div.registros.forEach(reg => {
+                // Geração Console
+                console.log(`  - %cNÚMERO: %c${reg.numero}`, styles.label, styles.data);
+                console.log(`  - %cNOME LIMPO: %c${reg.nomeCompleto}`, styles.label, styles.data);
+                console.log(`  - %cPERÍODO AQUISITIVO (Original): %c${reg.periodoAquisitivoOriginal}`, styles.label, styles.error);
+                console.log(`  - %cPERÍODO AQUISITIVO (Normalizado): %c${reg.periodoAquisitivoNormalizado}`, styles.label, styles.error);
+                console.log('  ---');
+
+                // Geração TXT
+                adicionarLinhaTxt(`  - NÚMERO: ${reg.numero}`);
+                adicionarLinhaTxt(`  - NOME LIMPO: ${reg.nomeCompleto}`);
+                adicionarLinhaTxt(`  - PERÍODO AQUISITIVO (Original): ${reg.periodoAquisitivoOriginal}`);
+                adicionarLinhaTxt(`  - PERÍODO AQUISITIVO (Normalizado): ${reg.periodoAquisitivoNormalizado}`);
+                adicionarLinhaTxt('  ---');
+            });
+        });
+        
+    } else {
+        // Geração Console
+        console.log(`%cTotal de Divergências Encontradas: %c0`, styles.success, styles.success);
+        console.log(`%c${linhaSeparadora}`, styles.separator);
+        console.log('\n✅ Nenhuma divergência de Período Aquisitivo encontrada em registros duplicados.');
+
+        // Geração TXT
+        adicionarLinhaTxt(`Total de Divergências Encontradas: 0`);
+        adicionarLinhaTxt(linhaSeparadora);
+        adicionarLinhaTxt('Nenhuma divergência de Período Aquisitivo encontrada em registros duplicados.');
+    }
+
+    // NOVO: Geração Console (Report 2 - Consistência Check)
+    console.log('\n%c=======================================================================', styles.header);
+    console.log('\n%c=== RELATÓRIO 2/2: INCOERÊNCIAS EXERCÍCIO vs. PERÍODO AQUISITIVO ===', styles.header);
+    
+    // Geração TXT (Report 2)
+    adicionarLinhaTxt('\n\n=======================================================================');
+    adicionarLinhaTxt('=== RELATÓRIO 2/2: INCOERÊNCIAS EXERCÍCIO vs. PERÍODO AQUISITIVO ===');
+    adicionarLinhaTxt(linhaSeparadora);
+
+    if (incoerenciasExercicio.length > 0) {
+        // Geração Console
+        console.log(`%cTotal de Incoerências Encontradas: %c${incoerenciasExercicio.length}`, styles.error, styles.error);
+        console.log(`%c${linhaSeparadora}`, styles.separator);
+        console.log('\n🚨 DETALHES DAS INCOERÊNCIAS EXERCÍCIO/AQUISITIVO:');
+
+        // Geração TXT
+        adicionarLinhaTxt(`Total de Incoerências Encontradas: ${incoerenciasExercicio.length}`);
+        adicionarLinhaTxt("### DETALHES DAS INCOERÊNCIAS EXERCÍCIO/AQUISITIVO (Ano do Exercício != Ano Inicial do Período Aquisitivo):");
+        
+        incoerenciasExercicio.forEach((reg, index) => {
+            // Geração Console
+            console.log(`\n%c[ ${index + 1} ] REGISTRO NÚMERO: %c${reg.numero} (Nome: ${reg.nomeCompleto})`, styles.groupHeader, styles.groupHeader);
+            console.log(`  - %cEXERCÍCIO (Ano): %c${reg.exercicioAno}`, styles.label, styles.error);
+            console.log(`  - %cPERÍODO AQUISITIVO (Início Ano): %c${reg.periodoAquisitivoInicioAno}`, styles.label, styles.error);
+            console.log(`  - %cINCOERÊNCIA: %cO ano do EXERCÍCIO (${reg.exercicioAno}) é diferente do ano de início do PERÍODO AQUISITIVO (${reg.periodoAquisitivoInicioAno}).`, styles.label, styles.error);
+            console.log('  ---');
+
+            // Geração TXT
+            adicionarLinhaTxt(`\n[ ${index + 1} ] REGISTRO NÚMERO: ${reg.numero} (Nome: ${reg.nomeCompleto})`);
+            adicionarLinhaTxt(`  - EXERCÍCIO (Ano): ${reg.exercicioAno}`);
+            adicionarLinhaTxt(`  - PERÍODO AQUISITIVO (Início Ano): ${reg.periodoAquisitivoInicioAno}`);
+            adicionarLinhaTxt(`  - INCOERÊNCIA: O ano do EXERCÍCIO (${reg.exercicioAno}) é diferente do ano de início do PERÍODO AQUISITIVO (${reg.periodoAquisitivoInicioAno}).`);
+            adicionarLinhaTxt('  ---');
+        });
+
+    } else {
+        // Geração Console
+        console.log(`%cTotal de Incoerências Encontradas: %c0`, styles.success, styles.success);
+        console.log(`%c${linhaSeparadora}`, styles.separator);
+        console.log('\n✅ Nenhuma incoerência entre Exercício e Ano Inicial do Período Aquisitivo foi encontrada em todos os registros.');
+
+        // Geração TXT
+        adicionarLinhaTxt(`Total de Incoerências Encontradas: 0`);
+        adicionarLinhaTxt(linhaSeparadora);
+        adicionarLinhaTxt('Nenhuma incoerência entre Exercício e Ano Inicial do Período Aquisitivo foi encontrada em todos os registros.');
+    }
+
+    console.log('\n%c=======================================================================', styles.header);
+    console.log('\n💾 DOWNLOAD AUTOMÁTICO INICIADO...');
+    console.log('%cO arquivo TXT será baixado automaticamente em breve. Verifique a sua pasta de downloads.', 'color: #00796b; font-weight: bold;');
+    
+    // Expondo a função de download para ser usada manualmente no console
+    window.downloadRelatorioTXT = function() {
+        downloadTxtFile(relatorioTxt, `Relatorio_Conferencia_AQUISITIVO_${new Date().toISOString().slice(0, 10)}.txt`);
+        console.log('%c✅ Download iniciado! Verifique sua pasta de downloads.', styles.success);
+    };
+
+    // 💾 ATIVAÇÃO DO DOWNLOAD AUTOMÁTICO EM TXT
+    // Usa setTimeout para garantir que o console terminou o output visual antes de iniciar o download.
+    setTimeout(window.downloadRelatorioTXT, 100); 
+
+    // Retorna a lista de divergências e incoerências (para debug/uso avançado)
+    return { divergencias, incoerenciasExercicio }; 
+
+})();

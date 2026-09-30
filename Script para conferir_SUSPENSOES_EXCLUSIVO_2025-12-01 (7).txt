@@ -1,0 +1,258 @@
+// Script para extrair dados de suspensão de afastamento, verificar inconsistências de datas
+// E A COERÊNCIA DO MOTIVO RELATADO.
+// REVISÃO: A expressão regular de busca de motivos foi aprimorada para lidar com a ausência
+// de pontuação ou quebra de linha entre rótulos como "MOTIVO RELATADO:" e "MOTIVO DA SUSPENSÃO:",
+// garantindo que cada motivo seja capturado separadamente.
+// Gera um relatório TXT para download automático com apenas os problemas encontrados.
+// Cole este código no console do navegador na página que contém o HTML.
+
+(function verificarInconsistenciasDeDados() {
+    console.log('🔍 INICIANDO VERIFICAÇÃO DE INCONSISTÊNCIAS (Datas e Motivo) - Filtrando por "FICA SUSPENSO"...');
+    console.log('─'.repeat(80));
+
+    // Regex para extrair os dados principais (datas, dias, e o primeiro MOTIVO).
+    // O padrão \*(\d{3}[\.\d]*)\* foi ajustado para capturar números com ou sem ponto (ex: *886* ou *8.86*).
+    const regex = /O AFASTAMENTO FÉRIAS EXERCÍCIO (\d{4}), DO (.*?) \*(\d{3}[\.\d]*)\* (.*?) COM PERÍODO ENTRE (\d{2}\/\d{2}\/\d{4}) A (\d{2}\/\d{2}\/\d{4}) TOTALIZANDO (\d+) DIAS,\s+FICA SUSPENSO\s+A CONTAR DE (\d{2}\/\d{2}\/\d{4})\. MOTIVO RELATADO: (.*)/s;
+
+    // Seleciona todos os blocos de afastamento azuis
+    const todosBlocosAzuis = document.querySelectorAll('table.frm-borda[bgcolor="#99ccff"]');
+
+    // Filtra para analisar apenas os blocos que parecem ser suspensão
+    const blocosSuspensao = Array.from(todosBlocosAzuis).filter(tabela => {
+        const content = tabela.textContent || '';
+        // Uma suspensão de afastamento de férias SEMPRE conterá esta frase.
+        return content.includes('FICA SUSPENSO'); 
+    });
+
+    if (blocosSuspensao.length === 0) {
+        console.error('❌ Não foram encontrados blocos de "SUSPENSÃO DE AFASTAMENTO" que contenham a frase "FICA SUSPENSO" para análise.');
+        return;
+    }
+
+    console.log(`✅ ${todosBlocosAzuis.length} blocos azuis encontrados na página.`);
+    console.log(`✅ ${blocosSuspensao.length} blocos de "SUSPENSÃO" filtrados e prontos para análise.`);
+    console.log('─'.repeat(80));
+
+
+    const registrosComInconsistencia = [];
+    
+
+    /**
+     * Converte uma data no formato DD/MM/YYYY para um objeto Date.
+     * @param {string} dateString Data no formato DD/MM/YYYY.
+     * @returns {Date | null} Objeto Date ou null se inválido.
+     */
+    function parseDate(dateString) {
+        const parts = dateString.split('/');
+        // Note: new Date(year, monthIndex, day) - monthIndex é 0-based
+        const date = new Date(parts[2], parts[1] - 1, parts[0]);
+        // Verifica se a data é válida (uma verificação simples, mas útil)
+        if (date.getFullYear() != parts[2] || date.getMonth() != parts[1] - 1 || date.getDate() != parts[0]) {
+            return null;
+        }
+        return date;
+    }
+
+    /**
+     * Calcula a diferença em dias (inclusiva) entre duas datas.
+     * @param {Date} start Data de início.
+     * @param {Date} end Data de fim.
+     * @returns {number} Número de dias (inclusivo).
+     */
+    function calculateDays(start, end) {
+        const diffTime = Math.abs(end - start);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        // A contagem é inclusiva, então adiciona 1 dia
+        return diffDays + 1;
+    }
+
+    /**
+     * Normaliza a string do motivo para uma comparação robusta (ignora case, pontuação final, e espaços).
+     */
+    function normalizarMotivo(motivo) {
+        if (typeof motivo !== 'string') return '';
+        // Remove espaços extras, converte para maiúsculas e remove pontuação final
+        return motivo.toUpperCase().trim().replace(/[., ]*$/, '').replace(/\s+/g, ' ');
+    }
+    
+    /**
+     * Procura por todas as ocorrências de MOTIVO RELATADO, MOTIVO DA SUSPENSÃO ou MOTIVO e extrai o valor.
+     * @param {string} text O conteúdo completo do bloco.
+     * @returns {string[]} Array de motivos encontrados.
+     */
+    function findMotives(text) {
+        // Expressão regular aprimorada. O lookahead (?=...) força a parada da captura se encontrar
+        // um ponto final, uma quebra de bloco (GOIÂNIA, etc), o final da string OU o início de outro rótulo de MOTIVO.
+        const motiveRegex = /(?:MOTIVO RELATADO|MOTIVO DA SUSPENSÃO|MOTIVO):\s*([^\n\r.]+?)(?=\.|\s*(?:GOIÂNIA|ITEM DOPM|PROCESSO SEI|PM\/CH\.GAB\.CMT)|$|\s*(?:MOTIVO RELATADO|MOTIVO DA SUSPENSÃO|MOTIVO):)/gi;
+        const motives = [];
+        let match;
+
+        while ((match = motiveRegex.exec(text)) !== null) {
+            motives.push(match[1].trim());
+        }
+        return motives;
+    }
+
+
+    // === 1. ETAPA DE EXTRAÇÃO E VALIDAÇÃO ===
+    blocosSuspensao.forEach((tabela, index) => {
+        const registro = { index: index + 1, inconsistencias: [], raw: {} };
+        let isInconsistent = false;
+
+        try {
+            const celulaConteudo = tabela.querySelector('td[width="90%"]');
+            if (!celulaConteudo) {
+                 registro.inconsistencias.push('Falha estrutural: Célula de conteúdo (width="90%") não encontrada.');
+                 registrosComInconsistencia.push(registro);
+                 return;
+            }
+
+            // Texto completo do bloco para a verificação de coerência do MOTIVO
+            const fullText = celulaConteudo.textContent;
+            // Coleta dados brutos o máximo possível
+            const allLines = fullText.trim().split('\n').filter(l => l.trim().length > 0);
+            registro.raw.textoCompleto = allLines.join(' | ');
+
+            // A primeira linha é a mais importante para a regex
+            const textoConteudo = allLines[0] || '';
+            const match = textoConteudo.match(regex);
+
+            // 1. VERIFICAÇÃO DE DATAS E EXTRAÇÃO PRIMÁRIA
+            if (!match) {
+                // Se a regex falhar, significa que o padrão da primeira linha está incorreto
+                registro.inconsistencias.push('Falha na extração (Regex): O bloco não segue o padrão de texto principal esperado na primeira linha.');
+                isInconsistent = true;
+
+            } else {
+                // Desempacota os grupos de captura da regex
+                const [, exercicio, posto, numero, nome, dtInicioStr, dtFimStr, diasInformadosStr, dtSuspensaoStr, motivo] = match;
+
+                // Armazena dados brutos para o relatório
+                registro.raw = { ...registro.raw, posto, numero, nome, dtInicioStr, dtFimStr, diasInformadosStr, dtSuspensaoStr, motivo };
+                registro.nomeCompleto = `${posto.trim()} ${nome.trim()}`;
+
+                // 1.1 Conversão de Datas
+                const dtInicio = parseDate(dtInicioStr);
+                const dtFim = parseDate(dtFimStr);
+                const dtSuspensao = parseDate(dtSuspensaoStr);
+                const diasInformados = parseInt(diasInformadosStr, 10);
+
+                if (!dtInicio || !dtFim || !dtSuspensao) {
+                    registro.inconsistencias.push('Falha de conversão de data: Pelo menos uma data (Início/Fim/Suspensão) está em formato inválido.');
+                    isInconsistent = true;
+                }
+
+                // 1.2 Coerência Temporal (Suspensão vs. Início Férias)
+                if (dtSuspensao && dtInicio && dtSuspensao > dtInicio) {
+                    registro.inconsistencias.push(`Incoerência temporal: Data da Suspensão (${dtSuspensaoStr}) é POSTERIOR ao Início das Férias (${dtInicioStr}).`);
+                    isInconsistent = true;
+                }
+
+                // 1.3 Divergência de Duração (Dias Calculados vs. Dias Informados)
+                if (dtInicio && dtFim) {
+                    const diasCalculados = calculateDays(dtInicio, dtFim);
+                    if (diasCalculados !== diasInformados) {
+                        registro.inconsistencias.push(`Divergência de duração: Período (${dtInicioStr} a ${dtFimStr}) tem ${diasCalculados} dias, mas o texto informa ${diasInformados} dias.`);
+                        isInconsistent = true;
+                    }
+                }
+            }
+            
+            // 2. VERIFICAÇÃO DE COERÊNCIA DO MOTIVO (aplicada a todo o texto DENTRO deste bloco)
+            const allMotives = findMotives(fullText);
+
+            if (allMotives.length >= 2) {
+                // Compara o primeiro motivo encontrado com todos os subsequentes
+                const motivoNormalizado1 = normalizarMotivo(allMotives[0]);
+
+                for (let i = 1; i < allMotives.length; i++) {
+                    const motivoN = allMotives[i];
+                    const motivoNormalizadoN = normalizarMotivo(motivoN);
+
+                    if (motivoNormalizado1 !== motivoNormalizadoN) {
+                        isInconsistent = true;
+                        registro.inconsistencias.push(`Divergência de Motivo (Ocorrência ${i + 1}): O primeiro motivo ("${allMotives[0]}") é diferente do motivo subsequente ("${motivoN}").`);
+                    }
+                }
+            } else if (allMotives.length === 0 && match) {
+                // Se for um bloco de suspensão (match != null), mas não encontrou motivo na segunda verificação
+                registro.inconsistencias.push('Falha de extração: Nenhuma ocorrência do padrão "MOTIVO:" ou "MOTIVO RELATADO:" foi encontrada no bloco.');
+                isInconsistent = true;
+            } 
+
+
+            // Adiciona o registro apenas se houver inconsistência (em datas ou motivo)
+            if (isInconsistent) {
+                registrosComInconsistencia.push(registro);
+            }
+
+        } catch (e) {
+            registro.inconsistencias.push(`Erro inesperado no bloco: ${e.message}`);
+            registrosComInconsistencia.push(registro);
+        }
+    });
+
+    console.log(`\n✅ ANÁLISE CONCLUÍDA! Total de blocos de Suspensão analisados: ${blocosSuspensao.length}`);
+    console.log(`🚨 Total de registros com inconsistência(s) detectada(s): ${registrosComInconsistencia.length}`);
+
+
+    // === 2. ETAPA DE GERAÇÃO DO RELATÓRIO TXT (APENAS COM INCONSISTÊNCIAS) ===
+
+    const totalInconsistencias = registrosComInconsistencia.length;
+    let relatorioTexto = `RELATÓRIO DE INCONSISTÊNCIAS (DATAS E COERÊNCIA DO MOTIVO)\n`;
+    relatorioTexto += `Data da Geração: ${new Date().toLocaleString('pt-BR')}\n`;
+    relatorioTexto += `Total de Blocos Azuis (Suspensão) Encontrados: ${blocosSuspensao.length}\n`;
+    relatorioTexto += `Total de Problemas Encontrados: ${totalInconsistencias}\n`;
+    relatorioTexto += '========================================================================\n\n';
+
+    if (totalInconsistencias === 0) {
+        relatorioTexto += 'NENHUMA INCONSISTÊNCIA DE DATA OU MOTIVO ENCONTRADA. TODOS OS REGISTROS DE SUSPENSÃO ESTÃO COERENTES.';
+    } else {
+        // Cria a formatação de cada registro problemático
+        registrosComInconsistencia.forEach((r, i) => {
+            relatorioTexto += `🚨 [PROBLEMA ${i + 1} / Bloco #${r.index}] - ${r.nomeCompleto || 'REGISTRO C/ FALHA DE EXTRAÇÃO'}\n`;
+            if (r.raw.dtInicioStr) {
+                relatorioTexto += `  Dados Primários: Férias de ${r.raw.dtInicioStr} a ${r.raw.dtFimStr} (${r.raw.diasInformadosStr} dias). Suspensão a partir de ${r.raw.dtSuspensaoStr}.\n`;
+                relatorioTexto += `  MOTIVO PRIMÁRIO (Capturado na 1ª linha): ${r.raw.motivo}\n`;
+            } else {
+                 relatorioTexto += `  Texto do Bloco (Resumo): ${r.raw.textoCompleto || 'Não capturado'}\n`;
+            }
+            relatorioTexto += '  INCONSISTÊNCIA(S) DETECTADA(S):\n';
+            r.inconsistencias.forEach(inc => {
+                relatorioTexto += `    > ${inc}\n`;
+            });
+            relatorioTexto += '------------------------------------------------------------------------\n';
+        });
+    }
+
+    // === 3. ETAPA DE DOWNLOAD AUTOMÁTICO ===
+
+    const nomeArquivo = `Relatorio_Inconsistencias_SUSPENSOES_EXCLUSIVO_${new Date().toISOString().slice(0, 10)}.txt`;
+
+    try {
+        const blob = new Blob([relatorioTexto], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nomeArquivo;
+
+        // Simula o clique para iniciar o download
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        URL.revokeObjectURL(url); // Limpa o objeto URL
+
+        console.log(`\n🎉 SUCESSO! O relatório foi baixado como "${nomeArquivo}"`);
+        if (totalInconsistencias > 0) {
+            console.log(`Verifique o arquivo para os ${totalInconsistencias} registros problemáticos.`);
+        } else {
+            console.log('O arquivo confirma a coerência de todos os registros de suspensão.');
+        }
+
+    } catch (e) {
+        console.error('\n❌ ERRO ao tentar gerar o download do arquivo:', e);
+    }
+
+})();
